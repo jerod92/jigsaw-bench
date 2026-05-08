@@ -70,9 +70,12 @@ class LLMCursorInterface:
         cursor_id: int = 0,
         snap_to: bool = True,
         snap_pos_threshold_px: float = 28.0,
-        snap_rot_threshold_deg: float = 18.0,
+        snap_rot_threshold_deg: float = 180.0,
         cursor_color: tuple[int, int, int] = (255, 64, 64),
     ):
+        """``snap_rot_threshold_deg=180`` means snap fires on position alone and auto-zeroes
+        rotation — the canonical "easy mode" the README mentions. Pass a smaller value if
+        you want the model to rotate the piece itself before releasing."""
         self.env = env
         self.cursor_id = cursor_id
         self.snap_to = snap_to
@@ -166,7 +169,7 @@ def benchmark_llm(
     max_steps: int = 2_000,
     snap_to: bool = True,
     snap_pos_threshold_px: float = 28.0,
-    snap_rot_threshold_deg: float = 18.0,
+    snap_rot_threshold_deg: float = 180.0,
     pos_tol_px: float = 6.0,
     rot_tol_deg: float = 5.0,
     initial_observation_only: bool = False,
