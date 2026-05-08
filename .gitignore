@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+.env
+build/
+dist/
+*.swp
+.DS_Store
+data/DIV2K*
+out/
+*.npz
+*.npy
+!examples/*.py
