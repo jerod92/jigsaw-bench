@@ -85,6 +85,16 @@ The LLM operates a single cursor with relative motion (`move(dx, dy)`, `grab()`,
 `release()`, `rotate(degrees)`, `finished()`). The cursor is drawn on every frame
 so a multimodal model can see where it is. Easy-mode snap-to is on by default.
 
+### Driving the env from a sub-agent / external process
+
+For evaluations where the model lives outside Python (a separate Claude Code agent,
+a shell loop, an HTTP service), `examples/vlm_driver.py` is a stateless CLI that
+persists env state to `/tmp/jb_state.pkl` and the latest frame to `/tmp/jb_frame.png`.
+By default the printed JSON status is **vision-only** — cursor pose, grab state, held
+piece index, solved flag — so the model has to actually look at the rendered frame
+to play. Pass `--debug` to also include per-piece centroids/targets/errors (useful
+for sanity-checking the plumbing or running an oracle).
+
 ### DIV2K batch generation
 
 ```python
