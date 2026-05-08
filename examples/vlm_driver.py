@@ -39,6 +39,10 @@ SEED = 0
 
 
 def _make_image() -> Image.Image:
+    """Load /tmp/jb_image.png if present, otherwise build a synthetic 4-color test image."""
+    custom = Path("/tmp/jb_image.png")
+    if custom.exists():
+        return Image.open(custom).convert("RGB").resize((240, 180), Image.LANCZOS)
     W, H = 240, 180
     img = Image.new("RGB", (W, H), "white")
     d = ImageDraw.Draw(img)
