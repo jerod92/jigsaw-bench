@@ -107,7 +107,7 @@ def _ring_slots(silhouette_aabb, canvas_w, canvas_h, cell, ring_idx):
 
 def shuffle_pieces(
     puzzle: Puzzle,
-    canvas_scale: float = 2.2,
+    canvas_scale: float = 3.0,
     margin: int = 24,
     rotation_deg_choices: tuple[float, ...] | None = None,
     seed: int | None = None,
@@ -119,16 +119,18 @@ def shuffle_pieces(
     over [0, 360)**. Pass ``rotation_deg_choices`` (e.g. ``(0, 90, 180, 270)``) to use
     a discrete set instead — useful for snap-friendly easy modes.
 
+    ``canvas_scale`` is the **target canvas-to-puzzle ratio** (default 3.0 — the
+    rendered board is ~1/3 of canvas dims). Aspect ratio of the puzzle is preserved.
+    The canvas auto-grows beyond this if pieces don't fit at the requested scale,
+    but never shrinks below it.
+
     Cell size = worst-case rotated-bbox extent across all pieces × ``cell_padding``.
-    The board is laid out in the canvas center; pieces fill rings starting just outside
-    the silhouette and growing outward. The canvas is automatically expanded if the
-    requested ``canvas_scale`` doesn't fit all pieces.
     """
     rng = np.random.default_rng(seed)
     cell = int(math.ceil(_max_rotated_extent(puzzle.pieces, rotation_deg_choices) * cell_padding))
 
-    cw = max(int(puzzle.width * canvas_scale), puzzle.width + 2 * (margin + cell * 3))
-    ch = max(int(puzzle.height * canvas_scale), puzzle.height + 2 * (margin + cell * 3))
+    cw = max(int(puzzle.width * canvas_scale), puzzle.width + 2 * (margin + cell))
+    ch = max(int(puzzle.height * canvas_scale), puzzle.height + 2 * (margin + cell))
     bx = (cw - puzzle.width) // 2
     by = (ch - puzzle.height) // 2
     silhouette_aabb = (bx - margin, by - margin, bx + puzzle.width + margin, by + puzzle.height + margin)
