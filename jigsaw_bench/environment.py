@@ -235,34 +235,26 @@ class JigsawEnvironment:
 
     def _draw_piece(self, canvas: Image.Image, ps: _PieceState) -> None:
         sprite = Image.fromarray(ps.sprite_rgba, mode="RGBA")
-        # Rotate around the in-sprite centroid; use expand=True and recompute paste offset.
-        local_cx, local_cy = ps.sprite_centroid_local
-        rotated = sprite.rotate(
-            ps.rotation_deg,
-            resample=Image.BILINEAR,
-            expand=True,
-            center=(local_cx, local_cy),
-        )
-        # PIL rotates around `center` and expands; the new sprite's local centroid sits at
-        # the same offset from the bbox top-left as before, plus PIL's translation. Easiest:
-        # paste so that the rotated centroid lands on canvas centroid.
+        sw, sh = sprite.size
+        # Rotate around the SPRITE CENTER (PIL clips when expand=True is combined with a
+        # custom center — it sizes the output as if rotating around center anyway).
+        rotated = sprite.rotate(ps.rotation_deg, resample=Image.BILINEAR, expand=True)
         rw, rh = rotated.size
-        # PIL with expand=True translates so the original bbox fits — the rotation pivot
-        # ends up at a new location inside the expanded image. Compute it analytically.
+
+        # The piece centroid was at (local_cx, local_cy) in the original sprite. After a
+        # rotate-around-center, it lands at the new image's center plus the rotated offset
+        # from sprite-center to centroid.
+        local_cx, local_cy = ps.sprite_centroid_local
+        dx = local_cx - sw / 2
+        dy = local_cy - sh / 2
+        # PIL rotates CCW by `rotation_deg` in image-y-down coords, which is screen-CW.
         a = math.radians(-ps.rotation_deg)
         cos_a, sin_a = math.cos(a), math.sin(a)
-        # Original 4 corners relative to pivot:
-        corners = np.array([
-            [-local_cx, -local_cy],
-            [sprite.size[0] - local_cx, -local_cy],
-            [sprite.size[0] - local_cx, sprite.size[1] - local_cy],
-            [-local_cx, sprite.size[1] - local_cy],
-        ])
-        rotated_corners = corners @ np.array([[cos_a, sin_a], [-sin_a, cos_a]])
-        min_xy = rotated_corners.min(axis=0)
-        new_pivot = -min_xy   # within the expanded sprite
-        paste_x = int(round(ps.centroid[0] - new_pivot[0]))
-        paste_y = int(round(ps.centroid[1] - new_pivot[1]))
+        new_centroid_x = rw / 2 + dx * cos_a - dy * sin_a
+        new_centroid_y = rh / 2 + dx * sin_a + dy * cos_a
+
+        paste_x = int(round(ps.centroid[0] - new_centroid_x))
+        paste_y = int(round(ps.centroid[1] - new_centroid_y))
         canvas.alpha_composite(rotated, dest=(paste_x, paste_y))
 
     # ---------- Convenience for benchmarking ----------

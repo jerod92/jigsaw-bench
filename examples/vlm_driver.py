@@ -107,11 +107,7 @@ def _status(state: dict, last_action: str, debug: bool) -> dict:
 def init(debug: bool) -> dict:
     img = _make_image()
     puzzle = generate_puzzle(img, width=240, height=180, n_cols=2, n_rows=2, seed=SEED)
-    layout = shuffle_pieces(
-        puzzle, canvas_scale=2.0,
-        rotation_deg_choices=(0, 90, 180, 270),
-        seed=SEED,
-    )
+    layout = shuffle_pieces(puzzle, canvas_scale=2.0, seed=SEED)
     env = JigsawEnvironment(puzzle, layout)
     iface = LLMCursorInterface(
         env,

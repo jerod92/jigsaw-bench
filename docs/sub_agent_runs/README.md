@@ -43,6 +43,21 @@ from a benchmark.** Easy mode confirms the plumbing works; hard mode leaves
 plenty of room for stronger models or fine-tuned controllers to differentiate
 themselves.
 
+## Caveats — known bugs at the time of these runs
+
+These four runs were performed before two render/shuffle bugs were fixed in commit
+`HEAD`:
+
+1. **Tab clipping in render.** PIL's `Image.rotate(center=..., expand=True)`
+   sizes the output canvas as if rotating around the image center, then rotates
+   around the custom center — content can fall outside the canvas and get
+   clipped. The renderer now rotates around image center and translates so the
+   piece centroid lands at the desired position, leaving tabs intact.
+2. **Discrete rotations.** Initial rotations were drawn from `(0, 90, 180, 270)`
+   to keep the worst-case rotated bbox small. The default is now a continuous
+   uniform distribution over `[0, 360)`. Easy mode is now harder; the existing
+   raccoon results should be re-run for an accurate baseline.
+
 ## Artifacts
 
 - `raccoon_initial.png` — fresh canvas at step 0 of the raccoon runs.

@@ -54,13 +54,22 @@ def _rects_overlap(a, b) -> bool:
 
 
 def _max_rotated_extent(pieces, rotation_choices) -> int:
-    """Worst-case rotated-bbox diagonal across all pieces and allowed rotations."""
+    """Worst-case rotated-bbox extent across all pieces and rotation choices.
+
+    For continuous rotations, worst case is at 45 deg: ``(w + h) / sqrt(2)``. For a
+    discrete set, sample each angle. Either way, take the max side across all pieces.
+    """
     worst = 0.0
     for p in pieces:
         h, w = p.sprite_rgba.shape[:2]
-        for a in rotation_choices:
-            rw, rh = _rotated_aabb(w, h, a)
+        if rotation_choices is None:
+            # Continuous: 45 deg gives the largest AABB side for any rectangle.
+            rw, rh = _rotated_aabb(w, h, 45.0)
             worst = max(worst, max(rw, rh))
+        else:
+            for a in rotation_choices:
+                rw, rh = _rotated_aabb(w, h, a)
+                worst = max(worst, max(rw, rh))
     return int(math.ceil(worst))
 
 
@@ -106,14 +115,17 @@ def shuffle_pieces(
 ) -> ShuffleLayout:
     """Scatter pieces around a centered silhouette using deterministic concentric rings.
 
+    By default each piece's rotation is drawn from a **continuous uniform distribution
+    over [0, 360)**. Pass ``rotation_deg_choices`` (e.g. ``(0, 90, 180, 270)``) to use
+    a discrete set instead — useful for snap-friendly easy modes.
+
     Cell size = worst-case rotated-bbox extent across all pieces × ``cell_padding``.
     The board is laid out in the canvas center; pieces fill rings starting just outside
     the silhouette and growing outward. The canvas is automatically expanded if the
     requested ``canvas_scale`` doesn't fit all pieces.
     """
     rng = np.random.default_rng(seed)
-    rotation_choices = rotation_deg_choices or tuple(np.arange(0, 360, 15.0))
-    cell = int(math.ceil(_max_rotated_extent(puzzle.pieces, rotation_choices) * cell_padding))
+    cell = int(math.ceil(_max_rotated_extent(puzzle.pieces, rotation_deg_choices) * cell_padding))
 
     cw = max(int(puzzle.width * canvas_scale), puzzle.width + 2 * (margin + cell * 3))
     ch = max(int(puzzle.height * canvas_scale), puzzle.height + 2 * (margin + cell * 3))
@@ -152,7 +164,10 @@ def shuffle_pieces(
         slack = max(0.0, cell * (1.0 - 1.0 / cell_padding) * 0.45)
         cx += rng.uniform(-slack, slack)
         cy += rng.uniform(-slack, slack)
-        angle = float(rng.choice(rotation_choices))
+        if rotation_deg_choices is None:
+            angle = float(rng.uniform(0.0, 360.0))
+        else:
+            angle = float(rng.choice(rotation_deg_choices))
         sh, sw = piece.sprite_rgba.shape[:2]
         aabb = _aabb_at_centroid(cx, cy, sw, sh, angle)
         tcx, tcy = piece.target_centroid
