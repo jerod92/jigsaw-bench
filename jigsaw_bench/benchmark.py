@@ -69,6 +69,35 @@ def _score(pos_err: dict[int, float], rot_err: dict[int, float], pos_tol: float,
     return total / n, correct
 
 
+def piece_errors(env: JigsawEnvironment) -> tuple[dict[int, float], dict[int, float]]:
+    """Per-piece (position_error_px, rotation_error_deg) for the env's *current* pose.
+
+    Public wrapper around the scoring internals -- safe to call at any time, including
+    every step of an RL rollout. Returns ``(pos_err, rot_err)``, each mapping piece
+    index -> error."""
+    return _piece_errors(env)
+
+
+def piecewise_score(
+    env: JigsawEnvironment,
+    pos_tol_px: float = 4.0,
+    rot_tol_deg: float = 3.0,
+) -> tuple[float, dict[int, bool]]:
+    """Official piecewise score in [0, 1] plus per-piece correctness for the env's
+    *current* state.
+
+    This is the same metric reported by ``benchmark_model`` / ``benchmark_llm`` as
+    ``BenchmarkResult.piecewise_score``, but computed on demand from a live env so it
+    can be used as a dense reward signal during training. Returns ``(score, correct)``
+    where ``correct`` maps piece index -> bool (within both tolerances).
+
+    Defaults match ``benchmark_model``'s tolerances (4 px / 3 deg); pass the same
+    tolerances you intend to evaluate with so the training signal and the reported
+    score agree."""
+    pos_err, rot_err = _piece_errors(env)
+    return _score(pos_err, rot_err, pos_tol_px, rot_tol_deg)
+
+
 def benchmark_model(
     env: JigsawEnvironment,
     model: JigsawModel,

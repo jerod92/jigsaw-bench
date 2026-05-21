@@ -9,7 +9,7 @@ from .cuts import (
 from .puzzle import Puzzle, Piece, generate_puzzle
 from .shuffle import shuffle_pieces, ShuffleLayout
 from .environment import JigsawEnvironment, ActionPoint
-from .benchmark import benchmark_model, BenchmarkResult
+from .benchmark import benchmark_model, BenchmarkResult, piece_errors, piecewise_score
 from .llm_interface import LLMCursorInterface, benchmark_llm
 
 __all__ = [
@@ -26,6 +26,8 @@ __all__ = [
     "ActionPoint",
     "benchmark_model",
     "BenchmarkResult",
+    "piece_errors",
+    "piecewise_score",
     "LLMCursorInterface",
     "benchmark_llm",
 ]
