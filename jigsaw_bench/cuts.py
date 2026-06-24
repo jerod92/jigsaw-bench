@@ -169,11 +169,38 @@ def _cuts_intersect_other_cuts(
     target_index: int,
     anchors: np.ndarray,
 ) -> bool:
-    """Check whether cut at target_index crosses any other cut outside shared anchors."""
+    """Check whether cut at target_index crosses any other cut outside shared anchors.
+
+    Used by the smoke-test suite for post-hoc full-pairwise validation.
+    The generation loop uses :func:`_cuts_intersect_previous` instead.
+    """
     kind_a, idx_a, line_a = polylines[target_index]
     for k, (kind_b, idx_b, line_b) in enumerate(polylines):
         if k == target_index:
             continue
+        shared = _shared_anchor_set(kind_a, idx_a, kind_b, idx_b, anchors)
+        if polylines_intersect(line_a, line_b, shared_endpoints=shared):
+            return True
+    return False
+
+
+def _cuts_intersect_previous(
+    polylines: list[tuple[str, int, np.ndarray]],
+    target_index: int,
+    anchors: np.ndarray,
+) -> bool:
+    """Check whether cut at target_index crosses any *already-finalized* cut.
+
+    Only cuts with index < target_index are considered finalized.  This is the
+    correct check for the greedy generation loop: by induction, if cut k does
+    not intersect cuts 0..k-1 (all finalized), then after processing all cuts
+    the entire set is pairwise non-intersecting.  Checking against not-yet-
+    finalized future cuts creates artificial conflicts and causes unnecessary
+    retry failures on dense grids.
+    """
+    kind_a, idx_a, line_a = polylines[target_index]
+    for k in range(target_index):
+        kind_b, idx_b, line_b = polylines[k]
         shared = _shared_anchor_set(kind_a, idx_a, kind_b, idx_b, anchors)
         if polylines_intersect(line_a, line_b, shared_endpoints=shared):
             return True
@@ -186,18 +213,40 @@ def generate_cuts(
     n_cols: int = 24,
     n_rows: int = 16,
     profile: Sequence[tuple[float, float, float]] | None = None,
-    anchor_sigma_x: float = 3.0,
-    anchor_sigma_y: float = 3.0,
+    anchor_sigma_x: float | None = None,
+    anchor_sigma_y: float | None = None,
     seed: int | None = None,
     max_retries_per_cut: int = 50,
     samples_per_edge: int = 60,
 ) -> PuzzleCuts:
     """Generate jigsaw cuts; regenerate any individual cut that intersects another.
 
-    If a single cut still intersects after `max_retries_per_cut` rebuilds, raises RuntimeError.
+    Parameters
+    ----------
+    anchor_sigma_x, anchor_sigma_y:
+        Standard deviation of the random perturbation applied to interior grid
+        anchor points, in pixels.  Defaults to **5 % of the cell dimension**
+        in each axis so the perturbation scales safely with cell size.  Passing
+        an explicit float overrides the auto-scaling (useful when you want more
+        or less anchor jitter regardless of grid density).
+
+    Notes
+    -----
+    Validation uses a *greedy* strategy: cut k is rebuilt until it does not
+    intersect any of cuts 0..k-1 (the already-finalized ones).  By induction
+    the final cut-set is globally pairwise non-intersecting.  Checking against
+    not-yet-finalized future cuts (the previous strategy) created artificial
+    conflicts on dense grids and caused unnecessary ``RuntimeError`` failures.
     """
     rng = np.random.default_rng(seed)
     profile = list(profile or DEFAULT_PROFILE)
+
+    # Auto-scale anchor jitter to 5 % of cell size so it stays safe on both
+    # sparse (large cells) and dense (small cells) grids.
+    if anchor_sigma_x is None:
+        anchor_sigma_x = (width / n_cols) * 0.05
+    if anchor_sigma_y is None:
+        anchor_sigma_y = (height / n_rows) * 0.05
 
     anchors = generate_grid_anchors(width, height, n_cols, n_rows, anchor_sigma_x, anchor_sigma_y, rng)
 
@@ -210,8 +259,8 @@ def generate_cuts(
         for i in range(1, n_cols)
     ]
 
-    # Validate: for each cut, if it intersects any other cut outside shared anchors,
-    # rebuild that single cut up to max_retries_per_cut times.
+    # Greedy validation: finalize cuts in order; each new cut is rebuilt until
+    # it doesn't cross any already-finalized cut (index < k).
     polylines: list[tuple[str, int, np.ndarray]] = []
     for j, line in enumerate(h_cuts, start=1):
         polylines.append(("h", j, line))
@@ -220,12 +269,13 @@ def generate_cuts(
 
     for k, (kind, idx, _line) in enumerate(polylines):
         attempts = 0
-        while _cuts_intersect_other_cuts(polylines, k, anchors):
+        while _cuts_intersect_previous(polylines, k, anchors):
             attempts += 1
             if attempts > max_retries_per_cut:
                 raise RuntimeError(
                     f"Could not generate a non-intersecting {kind}-cut at index {idx} "
-                    f"after {max_retries_per_cut} retries. Try gentler profile."
+                    f"after {max_retries_per_cut} retries. "
+                    f"Try a gentler profile or smaller anchor_sigma."
                 )
             if kind == "h":
                 new = _build_horizontal_polyline(anchors, idx, profile, rng, samples_per_edge)
