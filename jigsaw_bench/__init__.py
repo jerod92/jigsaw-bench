@@ -11,6 +11,7 @@ from .shuffle import shuffle_pieces, ShuffleLayout
 from .environment import JigsawEnvironment, ActionPoint
 from .benchmark import benchmark_model, BenchmarkResult, piece_errors, piecewise_score
 from .llm_interface import LLMCursorInterface, benchmark_llm
+from .geo_model import GeoObservation, geo_observation, GEO_PIECE_DIM, GEO_CURSOR_DIM
 
 __all__ = [
     "PuzzleCuts",
@@ -30,4 +31,8 @@ __all__ = [
     "piecewise_score",
     "LLMCursorInterface",
     "benchmark_llm",
+    "GeoObservation",
+    "geo_observation",
+    "GEO_PIECE_DIM",
+    "GEO_CURSOR_DIM",
 ]

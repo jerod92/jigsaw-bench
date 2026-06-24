@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Jigsaw puzzle generation, scattering, and AI benchmarking environment."
 readme = "README.md"
 requires-python = ">=3.9"
+license = { text = "MIT" }
 dependencies = [
     "numpy>=1.23",
     "scipy>=1.9",
@@ -19,7 +20,23 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+dev = ["pytest>=7", "ruff>=0.4"]
+
+[project.urls]
+Repository = "https://github.com/jerod92/jigsaw-bench"
+Issues = "https://github.com/jerod92/jigsaw-bench/issues"
 
 [tool.setuptools.packages.find]
 include = ["jigsaw_bench*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+exclude = ["*.ipynb"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = ["E501"]

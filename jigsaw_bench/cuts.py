@@ -153,7 +153,7 @@ def _build_vertical_polyline(anchors, i, profile, rng, samples_per_edge=60):
 
 def _shared_anchor_set(kind_a, idx_a, kind_b, idx_b, anchors):
     """Return the list of grid anchor points shared by two cuts, where touching is allowed."""
-    n_rows, n_cols = anchors.shape[0] - 1, anchors.shape[1] - 1
+    # n_rows, n_cols not needed — only the anchor grid is indexed below
     if kind_a == "h" and kind_b == "h":
         return []  # parallel cuts share no anchors
     if kind_a == "v" and kind_b == "v":

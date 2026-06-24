@@ -7,10 +7,9 @@ sub-pixel motor control to win.
 """
 from __future__ import annotations
 
-import math
 import time
 from dataclasses import dataclass
-from typing import Callable, Protocol
+from typing import Protocol
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -186,7 +185,7 @@ def benchmark_llm(
     for step in range(1, max_steps + 1):
         try:
             tool, kwargs = agent(obs, step, TOOL_SCHEMA)
-        except Exception as exc:  # noqa: BLE001 — surface as failure
+        except Exception:  # noqa: BLE001 — surface as failure
             obs = iface._overlay_cursor(env.render())
             break
 

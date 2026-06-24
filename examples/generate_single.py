@@ -5,7 +5,6 @@ import argparse
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import numpy as np
 from PIL import Image
 
 from jigsaw_bench import generate_puzzle, shuffle_pieces, JigsawEnvironment

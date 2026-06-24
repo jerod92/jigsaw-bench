@@ -3,8 +3,8 @@
 End-to-end jigsaw puzzle generation, scattering, and AI benchmarking.
 
 The cut algorithm is a smoothed-spline polyline between perturbed grid anchors. The
-generator now validates that no two distinct cuts intersect anywhere except at the
-grid anchors they share — offending cuts are regenerated until the cut-set is clean.
+generator validates that no two distinct cuts intersect anywhere except at the grid
+anchors they share — offending cuts are regenerated until the cut-set is clean.
 
 ## Components
 
@@ -17,6 +17,7 @@ grid anchors they share — offending cuts are regenerated until the cut-set is 
 | `environment.py` | Multi-cursor headless interactive env (grab / rotate / translate) |
 | `benchmark.py` | Score AI models against a puzzle, with optional snap-to easy mode |
 | `llm_interface.py` | Cursor-style relative-motion interface for a vanilla LLM |
+| `geo_model.py` | Geometric observation schema for structured (non-visual) DL models |
 
 ## Install
 
@@ -32,10 +33,16 @@ Generate a puzzle from any image and render the shuffled layout:
 python examples/generate_single.py path/to/image.jpg --cols 12 --rows 8 --out out/
 ```
 
-Run the bundled "oracle" benchmark (translates each piece to its target):
+Run the bundled rule-based oracle:
 
 ```bash
 python examples/oracle_benchmark.py path/to/image.jpg --cursors 4
+```
+
+Collect oracle demonstrations, train a behavioral cloning MLP, and evaluate it:
+
+```bash
+python examples/geo_bc_oracle.py path/to/image.jpg --rollouts 8 --epochs 300
 ```
 
 ## Library use
@@ -70,7 +77,86 @@ Each cursor sends a structured action per step:
 Grabbed pieces always render above ungrabbed pieces. Among multiple grabbed pieces,
 higher `render_priority` renders above lower.
 
-### Vanilla LLM mode
+---
+
+## Geometric model interface
+
+`geo_model.py` provides a structured observation schema for models that operate on
+geometry rather than pixels. This is the recommended starting point for deep learning
+models that are not vision-based.
+
+### Observation schema
+
+```python
+from jigsaw_bench import geo_observation, GEO_PIECE_DIM, GEO_CURSOR_DIM
+
+obs = geo_observation(env)  # GeoObservation
+# obs.piece_features  : (N, 8) float32
+# obs.cursor_features : (K, 5) float32
+```
+
+**`piece_features`** — `(N, GEO_PIECE_DIM=8)` one row per piece:
+
+| col | feature |
+| --- | --- |
+| 0–1 | `cx / W`, `cy / H` — current centroid (normalised) |
+| 2–3 | `sin(rot)`, `cos(rot)` — rotation as unit-circle coords |
+| 4–5 | `tx / W`, `ty / H` — target (solved) centroid |
+| 6–7 | `(tx−cx)/W`, `(ty−cy)/H` — positional delta to target |
+
+**`cursor_features`** — `(K, GEO_CURSOR_DIM=5)` one row per active cursor:
+
+| col | feature |
+| --- | --- |
+| 0–1 | `cursor_x / W`, `cursor_y / H` — last cursor position |
+| 2 | `is_holding` — 1.0 if cursor holds a piece |
+| 3–4 | centroid of held piece (normalised); 0,0 if not holding |
+
+Supporting arrays `piece_indices` and `cursor_ids` map each row back to the
+corresponding piece index / cursor id in the environment.
+
+### Behavioral cloning oracle
+
+`examples/geo_bc_oracle.py` trains a framework-free (NumPy-only) two-layer MLP to
+clone the rule-based oracle's behavior from geometric observations.
+
+**Per-cursor feature vector** `(BC_FEAT_DIM = 13)`:
+
+| cols | features |
+| --- | --- |
+| 0–1 | cursor position normalised |
+| 2 | is_holding |
+| 3–4 | target piece centroid normalised |
+| 5–6 | sin/cos of piece rotation |
+| 7–8 | target (solved) centroid normalised |
+| 9–10 | cursor → piece delta normalised |
+| 11–12 | piece → target delta normalised |
+
+**Output action vector** `(BC_ACT_DIM = 4)`:
+
+| col | meaning |
+| --- | --- |
+| 0–1 | `action_x`, `action_y` — target cursor position (normalised) |
+| 2 | `grab_logit` — `> 0` → `grab=True` |
+| 3 | `rotation_delta` ∈ (−1, 1) |
+
+```python
+from examples.geo_bc_oracle import (
+    cursor_features, _MLP, make_bc_oracle, make_rule_oracle,
+)
+
+# Train
+mlp = _MLP(hidden=128)
+mlp.fit(X_norm, Y, epochs=300)
+
+# Deploy
+bc_model = make_bc_oracle(mlp, env, num_cursors=4)
+result = benchmark_model(env, bc_model, max_steps=3000, snap_to=True)
+```
+
+---
+
+## Vanilla LLM mode
 
 ```python
 from jigsaw_bench.llm_interface import LLMCursorInterface, benchmark_llm
@@ -87,13 +173,13 @@ so a multimodal model can see where it is. Easy-mode snap-to is on by default.
 
 ### Driving the env from a sub-agent / external process
 
-For evaluations where the model lives outside Python (a separate Claude Code agent,
-a shell loop, an HTTP service), `examples/vlm_driver.py` is a stateless CLI that
-persists env state to `/tmp/jb_state.pkl` and the latest frame to `/tmp/jb_frame.png`.
-By default the printed JSON status is **vision-only** — cursor pose, grab state, held
-piece index, solved flag — so the model has to actually look at the rendered frame
-to play. Pass `--debug` to also include per-piece centroids/targets/errors (useful
-for sanity-checking the plumbing or running an oracle).
+For evaluations where the model lives outside Python (a separate agent, a shell loop,
+an HTTP service), `examples/vlm_driver.py` is a stateless CLI that persists env state
+to `/tmp/jb_state.pkl` and the latest frame to `/tmp/jb_frame.png`. By default the
+printed JSON status is **vision-only** — cursor pose, grab state, held piece index,
+solved flag — so the model has to actually look at the rendered frame to play. Pass
+`--debug` to also include per-piece centroids/targets/errors (useful for sanity-checking
+the plumbing or running an oracle).
 
 ### DIV2K batch generation
 

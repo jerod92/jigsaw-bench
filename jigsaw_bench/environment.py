@@ -11,13 +11,11 @@ window/event loop — drive it from Python.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from typing import Iterable, Sequence
+from dataclasses import dataclass
+from typing import Sequence
 
 import numpy as np
 from PIL import Image
-from shapely.geometry import Point
-from shapely.affinity import rotate as shp_rotate, translate as shp_translate
 
 from .puzzle import Puzzle
 from .shuffle import ShuffleLayout
