@@ -75,6 +75,8 @@ from jigsaw_bench import (
     JigsawEnvironment,
     benchmark_model,
     generate_puzzle,
+    record_rollout,
+    save_gif,
     shuffle_pieces,
 )
 from geo_bc_oracle import _make_oracle, build_cursor_feat, make_rule_oracle
@@ -84,8 +86,8 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 OUT_DIR = Path("/kaggle/working/jigsaw_multicursor")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-FRAME_H: int = 64    # CNN input height
-FRAME_W: int = 64    # CNN input width
+FRAME_H: int = 256   # CNN input height
+FRAME_W: int = 256   # CNN input width
 CURSOR_DIM: int = 5  # GEO_CURSOR_DIM
 ACT_DIM: int = 4     # (action_x, action_y, grab_logit, rotation_delta)
 
@@ -164,15 +166,17 @@ class JigsawCursorNet(nn.Module):
     ) -> None:
         super().__init__()
 
-        # 4-layer stride-2 CNN; each conv halves spatial dims
-        # 64×64 → 32×32 → 16×16 → 8×8 → 4×4
+        # 5-layer stride-2 CNN + adaptive pool → resolution-agnostic 4×4 output
+        # 256×256 → 128 → 64 → 32 → 16 → 8 → AdaptivePool → 4×4
         self.cnn = nn.Sequential(
             nn.Conv2d(3,   32,  kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(32),  nn.ReLU(inplace=True),
             nn.Conv2d(32,  64,  kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(64),  nn.ReLU(inplace=True),
             nn.Conv2d(64,  128, kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(128), nn.ReLU(inplace=True),
             nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(256), nn.ReLU(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(256), nn.ReLU(inplace=True),
+            nn.AdaptiveAvgPool2d(4),  # always 4×4 regardless of input resolution
         )
-        cnn_flat = 256 * (frame_h // 16) * (frame_w // 16)  # 256 * 4 * 4 = 4096 for 64×64
+        cnn_flat = 256 * 4 * 4  # = 4096, resolution-agnostic
 
         self.frame_proj = nn.Sequential(
             nn.Flatten(),
@@ -465,12 +469,13 @@ def main() -> None:
     puzzle, layout = puzzle_factory(seed=SEED)
     env_rb = JigsawEnvironment(puzzle, layout)
     rb_model = make_rule_oracle(env_rb, num_cursors=None)  # K = N = 24 cursors
-    rb_result = benchmark_model(
-        env_rb, rb_model, max_steps=2000,
+    rb_frames, rb_result = record_rollout(
+        env_rb, rb_model, max_steps=2000, capture_every=8,
         snap_to=True, snap_pos_threshold_px=18, snap_rot_threshold_deg=10,
     )
     print(rb_result.summary())
-    Image.fromarray(env_rb.render()).save(OUT_DIR / "oracle_final.png")
+    Image.fromarray(rb_frames[-1]).save(OUT_DIR / "oracle_final.png")
+    save_gif(rb_frames, OUT_DIR / "oracle_run.gif", fps=12, max_width=640)
 
     # ── 2. Collect training data ────────────────────────────────────────────
     data_path = OUT_DIR / "oracle_data.npz"
@@ -536,12 +541,13 @@ def main() -> None:
     puzzle, layout = puzzle_factory(seed=SEED)
     env_bc = JigsawEnvironment(puzzle, layout)
     torch_oracle = make_torch_oracle(model, env_bc, num_cursors=None)
-    bc_result = benchmark_model(
-        env_bc, torch_oracle, max_steps=2000,
+    bc_frames, bc_result = record_rollout(
+        env_bc, torch_oracle, max_steps=2000, capture_every=8,
         snap_to=True, snap_pos_threshold_px=18, snap_rot_threshold_deg=10,
     )
     print(bc_result.summary())
-    Image.fromarray(env_bc.render()).save(OUT_DIR / "bc_final.png")
+    Image.fromarray(bc_frames[-1]).save(OUT_DIR / "bc_final.png")
+    save_gif(bc_frames, OUT_DIR / "bc_run.gif", fps=12, max_width=640)
 
     # ── 6. Results ──────────────────────────────────────────────────────────
     print("\n┌─────────────────────────────────────────────────────┐")
@@ -568,8 +574,10 @@ def main() -> None:
     print(f"\nAll outputs saved to: {OUT_DIR}")
     print(f"  oracle_data.npz      — raw training data")
     print(f"  jigsaw_cursor_net.pt — trained model weights")
-    print(f"  oracle_final.png     — rule-based oracle final state")
-    print(f"  bc_final.png         — BC model final state")
+    print(f"  oracle_run.gif       — rule-based oracle full rollout")
+    print(f"  bc_run.gif           — BC model full rollout")
+    print(f"  oracle_final.png     — rule-based oracle final frame")
+    print(f"  bc_final.png         — BC model final frame")
     print(f"  results.json         — benchmark comparison")
 
 
