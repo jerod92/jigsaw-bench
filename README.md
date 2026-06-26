@@ -16,6 +16,8 @@ anchors they share — offending cuts are regenerated until the cut-set is clean
 | `shuffle.py` | Scatter pieces around a centered silhouette, no overlaps |
 | `environment.py` | Multi-cursor headless interactive env (grab / rotate / translate) |
 | `benchmark.py` | Score AI models against a puzzle, with optional snap-to easy mode |
+| `oracle.py` | Greedy multi-cursor reference solver (any cursor/piece count) |
+| `gif_utils.py` | Record a rollout and save it as an animated GIF |
 | `llm_interface.py` | Cursor-style relative-motion interface for a vanilla LLM |
 | `geo_model.py` | Geometric observation schema for structured (non-visual) DL models |
 
@@ -44,6 +46,40 @@ Collect oracle demonstrations, train a behavioral cloning MLP, and evaluate it:
 ```bash
 python examples/geo_bc_oracle.py path/to/image.jpg --rollouts 8 --epochs 300
 ```
+
+## Greedy multi-cursor oracle
+
+`GreedyOracle` is the reference solver. It handles any number of cursors `c`
+(up to `MAX_CURSORS = 32`) and pieces `p` (up to `MAX_PIECES = 500`):
+
+- **`c > p`** — every piece gets its closest cursor; spare cursors park in the corner.
+- **`c == p`** — each cursor gets a unique piece.
+- **`c < p`** — cursors finish a piece and pick up the next-closest one, in waves.
+
+Each cursor aims at a guaranteed-interior point of its piece, moves **1/3 of the
+remaining distance** per step (grabbing once it lands), then carries the piece —
+moving 1/3 of the remaining distance **and** rotating 1/3 of the remaining
+(shortest-direction) angle — until it is within snap tolerance, where it releases
+and is reassigned.
+
+```python
+from jigsaw_bench import (
+    generate_puzzle, shuffle_pieces, JigsawEnvironment,
+    make_greedy_oracle, record_rollout, save_gif,
+)
+
+puzzle = generate_puzzle("photo.jpg", width=720, height=480, n_cols=6, n_rows=4, seed=1)
+env = JigsawEnvironment(puzzle, shuffle_pieces(puzzle, canvas_scale=2.2, seed=1))
+
+oracle = make_greedy_oracle(env, num_cursors=8)        # None → one cursor per piece
+frames, result = record_rollout(env, oracle, capture_every=4, snap_to=True)
+save_gif(frames, "oracle.gif", fps=14)
+print(result.summary())                                 # solved=True, score=1.0
+```
+
+`examples/kaggle_oracle_demo.py` is a self-contained Kaggle script that clones
+the repo and renders GIFs of the oracle solving the `c<p`, `c=p`, and `c>p`
+cases plus a larger 70-piece puzzle.
 
 ## Library use
 

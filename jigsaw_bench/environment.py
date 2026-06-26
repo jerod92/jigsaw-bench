@@ -178,10 +178,21 @@ class JigsawEnvironment:
                 self._release(cs)
 
     def _try_grab(self, cs: _CursorState, cx: float, cy: float) -> None:
-        """Find topmost piece whose mask covers (cx, cy) and grab it."""
+        """Find topmost *unheld* piece whose mask covers (cx, cy) and grab it.
+
+        Pieces already held by another cursor are skipped — a held piece is
+        claimed and cannot be stolen, so a carried piece passing over another
+        piece's grab point won't be picked up by a second cursor.
+        """
+        held_by_others = {
+            c.held_piece for c in self.cursors.values()
+            if c is not cs and c.held_piece is not None
+        }
         # Iterate from highest z to lowest.
         ordered = sorted(self.pieces.values(), key=lambda p: -p.z)
         for ps in ordered:
+            if ps.index in held_by_others:
+                continue
             if self._point_hits_piece(ps, cx, cy):
                 cs.held_piece = ps.index
                 # Grab offset = where this cursor sits, expressed in the piece's local frame
