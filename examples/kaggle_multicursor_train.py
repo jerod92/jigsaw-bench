@@ -73,7 +73,6 @@ from torch.utils.data import DataLoader, Dataset, random_split
 from jigsaw_bench import (
     ActionPoint,
     JigsawEnvironment,
-    benchmark_model,
     generate_puzzle,
     record_rollout,
     save_gif,
@@ -86,8 +85,8 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 OUT_DIR = Path("/kaggle/working/jigsaw_multicursor")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-FRAME_H: int = 256   # CNN input height
-FRAME_W: int = 256   # CNN input width
+FRAME_H: int = 128   # CNN input height  (bump to 256 on GPU for better quality)
+FRAME_W: int = 128   # CNN input width
 CURSOR_DIM: int = 5  # GEO_CURSOR_DIM
 ACT_DIM: int = 4     # (action_x, action_y, grab_logit, rotation_delta)
 
@@ -167,7 +166,7 @@ class JigsawCursorNet(nn.Module):
         super().__init__()
 
         # 5-layer stride-2 CNN + adaptive pool → resolution-agnostic 4×4 output
-        # 256×256 → 128 → 64 → 32 → 16 → 8 → AdaptivePool → 4×4
+        # 128×128 → 64 → 32 → 16 → 8 → 4 → AdaptivePool → 4×4  (same for 256×256)
         self.cnn = nn.Sequential(
             nn.Conv2d(3,   32,  kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(32),  nn.ReLU(inplace=True),
             nn.Conv2d(32,  64,  kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(64),  nn.ReLU(inplace=True),
@@ -211,25 +210,32 @@ class JigsawCursorNet(nn.Module):
 
 
 class OracleDataset(Dataset):
-    """(frame, cursor_feat, action) triples collected from rule-based oracle."""
+    """(frame, cursor_feat, action) triples collected from rule-based oracle.
+
+    Frames are stored deduplicated (one per step); each sample holds an index
+    into the frame array rather than its own copy.  With K=24 cursors this
+    saves ~24× memory vs naïvely repeating the frame per cursor.
+    """
 
     def __init__(
         self,
-        frames: np.ndarray,       # (N, H, W, 3) uint8
-        cursor_feats: np.ndarray,  # (N, CURSOR_DIM) float32
-        actions: np.ndarray,       # (N, ACT_DIM) float32
+        frames: np.ndarray,        # (F, H, W, 3) uint8 — unique frames
+        frame_indices: np.ndarray,  # (N,) int32      — maps sample → frame row
+        cursor_feats: np.ndarray,   # (N, CURSOR_DIM) float32
+        actions: np.ndarray,        # (N, ACT_DIM) float32
     ) -> None:
         # HWC uint8 → CHW float32 normalised to [0, 1]
         frames_chw = frames.transpose(0, 3, 1, 2).astype(np.float32) / 255.0
         self.frames = torch.from_numpy(frames_chw)
+        self.frame_indices = torch.from_numpy(frame_indices.astype(np.int64))
         self.cursors = torch.from_numpy(cursor_feats.astype(np.float32))
         self.actions = torch.from_numpy(actions.astype(np.float32))
 
     def __len__(self) -> int:
-        return len(self.frames)
+        return len(self.frame_indices)
 
     def __getitem__(self, idx: int):
-        return self.frames[idx], self.cursors[idx], self.actions[idx]
+        return self.frames[self.frame_indices[idx]], self.cursors[idx], self.actions[idx]
 
 
 # ── Section 6: Data collection ───────────────────────────────────────────────
@@ -245,17 +251,22 @@ def collect_pytorch_data(
     n_rollouts: int = N_ROLLOUTS,
     num_cursors: int | None = None,
     max_steps: int = MAX_STEPS,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Run the rule-based oracle and record (frame, cursor_feat, action) triples.
+
+    Frames are stored once per step and shared across all K cursors active at
+    that step.  With K=24 this cuts frame memory ~24× compared to duplicating.
 
     Returns
     -------
-    frames       : (M, FRAME_H, FRAME_W, 3) uint8
-    cursor_feats : (M, CURSOR_DIM) float32
-    actions      : (M, ACT_DIM) float32
-                     grab column encoded as +3 (grab) / −3 (release) logit targets
+    frames        : (F, FRAME_H, FRAME_W, 3) uint8  — unique frames (one/step)
+    frame_indices : (N,) int32                       — maps sample i → frames row
+    cursor_feats  : (N, CURSOR_DIM) float32
+    actions       : (N, ACT_DIM) float32
+                      grab column encoded as +3 (grab) / −3 (release) logit
     """
-    frames_list: list[np.ndarray] = []
+    unique_frames: list[np.ndarray] = []  # one per step across all rollouts
+    frame_indices: list[int] = []
     cursor_list: list[np.ndarray] = []
     action_list: list[np.ndarray] = []
 
@@ -268,9 +279,15 @@ def collect_pytorch_data(
 
         for step in range(1, max_steps + 1):
             raw = env.render()
-            small = _resize_frame(raw)  # (64, 64, 3) uint8
+            small = _resize_frame(raw)  # (FRAME_H, FRAME_W, 3) uint8
 
             actions = oracle(raw, step)
+
+            # Store this frame once; all cursors in this step share the index
+            frame_idx = len(unique_frames)
+            any_active = any(not ap.finished for ap in actions.values())
+            if any_active:
+                unique_frames.append(small)
 
             for cid, ap in actions.items():
                 if ap.finished:
@@ -281,7 +298,7 @@ def collect_pytorch_data(
                      float(np.clip(ap.rotation_delta, -1.0, 1.0))],
                     dtype=np.float32,
                 )
-                frames_list.append(small)
+                frame_indices.append(frame_idx)
                 cursor_list.append(c_feat)
                 action_list.append(act)
 
@@ -289,14 +306,21 @@ def collect_pytorch_data(
             if env.is_solved():
                 break
 
-        print(f"  rollout {rollout + 1:3d}/{n_rollouts}  total samples: {len(frames_list):7,d}")
+        n_samples = len(frame_indices)
+        n_frames = len(unique_frames)
+        print(f"  rollout {rollout + 1:3d}/{n_rollouts}  samples: {n_samples:7,d}  unique frames: {n_frames:5,d}")
 
-    if not frames_list:
-        empty = lambda shape: np.zeros(shape, dtype=np.float32)
-        return empty((0, FRAME_H, FRAME_W, 3)), empty((0, CURSOR_DIM)), empty((0, ACT_DIM))
+    if not unique_frames:
+        return (
+            np.zeros((0, FRAME_H, FRAME_W, 3), dtype=np.uint8),
+            np.zeros(0, dtype=np.int32),
+            np.zeros((0, CURSOR_DIM), dtype=np.float32),
+            np.zeros((0, ACT_DIM), dtype=np.float32),
+        )
 
     return (
-        np.stack(frames_list).astype(np.uint8),
+        np.stack(unique_frames),
+        np.array(frame_indices, dtype=np.int32),
         np.stack(cursor_list),
         np.stack(action_list),
     )
@@ -482,28 +506,38 @@ def main() -> None:
     if data_path.exists():
         print(f"\n=== Loading cached data from {data_path} ===")
         d = np.load(data_path)
-        frames_arr, cursors_arr, actions_arr = d["frames"], d["cursors"], d["actions"]
+        frames_arr = d["frames"]
+        frame_idx_arr = d["frame_indices"]
+        cursors_arr, actions_arr = d["cursors"], d["actions"]
     else:
         print(f"\n=== Collecting oracle data ({N_ROLLOUTS} rollouts, K=N simultaneous) ===")
         t0 = time.time()
-        frames_arr, cursors_arr, actions_arr = collect_pytorch_data(
+        frames_arr, frame_idx_arr, cursors_arr, actions_arr = collect_pytorch_data(
             puzzle_factory,
             n_rollouts=N_ROLLOUTS,
             num_cursors=None,
             max_steps=MAX_STEPS,
         )
-        print(f"Collected {len(frames_arr):,} samples in {time.time() - t0:.1f}s")
-        np.savez_compressed(data_path, frames=frames_arr, cursors=cursors_arr, actions=actions_arr)
+        elapsed = time.time() - t0
+        frame_mb = frames_arr.nbytes / 1024 ** 2
+        print(f"Collected {len(frame_idx_arr):,} samples ({len(frames_arr):,} unique frames, "
+              f"{frame_mb:.0f} MB) in {elapsed:.1f}s")
+        np.savez_compressed(
+            data_path,
+            frames=frames_arr, frame_indices=frame_idx_arr,
+            cursors=cursors_arr, actions=actions_arr,
+        )
         print(f"Saved to {data_path}")
 
-    print(f"Dataset  frames={frames_arr.shape}  cursors={cursors_arr.shape}  actions={actions_arr.shape}")
+    print(f"Unique frames : {frames_arr.shape}  ({frames_arr.nbytes // 1024**2} MB)")
+    print(f"Samples       : {len(frame_idx_arr):,}  cursors={cursors_arr.shape}  actions={actions_arr.shape}")
 
-    if len(frames_arr) == 0:
+    if len(frame_idx_arr) == 0:
         print("No samples collected — aborting.")
         return
 
     # ── 3. DataLoaders ──────────────────────────────────────────────────────
-    full_ds = OracleDataset(frames_arr, cursors_arr, actions_arr)
+    full_ds = OracleDataset(frames_arr, frame_idx_arr, cursors_arr, actions_arr)
     n_val = max(1, int(len(full_ds) * VAL_FRACTION))
     n_train = len(full_ds) - n_val
     train_ds, val_ds = random_split(
@@ -562,8 +596,9 @@ def main() -> None:
     results = {
         "rule_based": rb,
         "bc_cnn": bc,
-        "n_train_samples": n_train,
-        "n_val_samples": n_val,
+        "n_train_samples": int(n_train),
+        "n_val_samples": int(n_val),
+        "n_unique_frames": int(len(frames_arr)),
         "n_epochs": N_EPOCHS,
         "model_params": n_params,
         "device": str(DEVICE),
