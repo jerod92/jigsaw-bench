@@ -142,24 +142,22 @@ if not IMG_PATH.exists():
 
 
 class JigsawCursorNet(nn.Module):
-    """Multi-cursor jigsaw model: CNN frame encoder + cursor MLP + fusion head.
+    """Multi-cursor jigsaw model.
 
-    Inputs
-    ------
-    frame  : (B, 3, FRAME_H, FRAME_W) float32 normalised to [0, 1]
-    cursor : (B, CURSOR_DIM) float32
-               [x/W, y/H, is_holding, held_cx/W, held_cy/H]
+    One forward pass per step:
 
-    Output
-    ------
-    actions : (B, ACT_DIM) float32
-                [action_x, action_y, grab_logit, rotation_delta]
+        frame (B, 3, H, W)  →  CNN  →  shared 512-d embedding  ─┐
+                                                                  ├→  (B, K, 4) actions
+        cursors (B, K, 5)   →  MLP  →  per-cursor 64-d embed  ─┘
+
+    The frame is encoded once; that shared hidden state is broadcast to all K
+    cursor heads.  nn.Linear naturally applies over the last dimension, so the
+    cursor MLP and action head work identically for K=1 or K=24 without any
+    reshape tricks.
     """
 
     def __init__(
         self,
-        frame_h: int = FRAME_H,
-        frame_w: int = FRAME_W,
         cursor_dim: int = CURSOR_DIM,
         act_dim: int = ACT_DIM,
     ) -> None:
@@ -173,17 +171,17 @@ class JigsawCursorNet(nn.Module):
             nn.Conv2d(64,  128, kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(128), nn.ReLU(inplace=True),
             nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(256), nn.ReLU(inplace=True),
             nn.Conv2d(256, 256, kernel_size=4, stride=2, padding=1), nn.BatchNorm2d(256), nn.ReLU(inplace=True),
-            nn.AdaptiveAvgPool2d(4),  # always 4×4 regardless of input resolution
+            nn.AdaptiveAvgPool2d(4),
         )
-        cnn_flat = 256 * 4 * 4  # = 4096, resolution-agnostic
 
         self.frame_proj = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(cnn_flat, 512),
+            nn.Linear(256 * 4 * 4, 512),
             nn.ReLU(inplace=True),
             nn.Dropout(0.2),
         )
 
+        # Operates on last dim → works for (B, 5) or (B, K, 5) unchanged
         self.cursor_mlp = nn.Sequential(
             nn.Linear(cursor_dim, 64),
             nn.ReLU(inplace=True),
@@ -191,6 +189,7 @@ class JigsawCursorNet(nn.Module):
             nn.ReLU(inplace=True),
         )
 
+        # Operates on last dim → works for (B, 576) or (B, K, 576) unchanged
         self.head = nn.Sequential(
             nn.Linear(512 + 64, 256),
             nn.ReLU(inplace=True),
@@ -200,42 +199,42 @@ class JigsawCursorNet(nn.Module):
             nn.Linear(128, act_dim),
         )
 
-    def forward(self, frame: torch.Tensor, cursor: torch.Tensor) -> torch.Tensor:
-        frame_feat = self.frame_proj(self.cnn(frame))          # (B, 512)
-        cursor_feat = self.cursor_mlp(cursor)                  # (B, 64)
-        return self.head(torch.cat([frame_feat, cursor_feat], dim=1))  # (B, 4)
+    def forward(self, frame: torch.Tensor, cursors: torch.Tensor) -> torch.Tensor:
+        """
+        frame   : (B, 3, H, W)
+        cursors : (B, K, 5)
+        returns : (B, K, 4)
+        """
+        K = cursors.shape[1]
+        frame_emb = self.frame_proj(self.cnn(frame))           # (B, 512)
+        frame_exp = frame_emb.unsqueeze(1).expand(-1, K, -1)  # (B, K, 512)
+        cursor_emb = self.cursor_mlp(cursors)                  # (B, K, 64)
+        fused = torch.cat([frame_exp, cursor_emb], dim=-1)    # (B, K, 576)
+        return self.head(fused)                               # (B, K, 4)
 
 
 # ── Section 5: Dataset ───────────────────────────────────────────────────────
 
 
 class OracleDataset(Dataset):
-    """(frame, cursor_feat, action) triples collected from rule-based oracle.
-
-    Frames are stored deduplicated (one per step); each sample holds an index
-    into the frame array rather than its own copy.  With K=24 cursors this
-    saves ~24× memory vs naïvely repeating the frame per cursor.
-    """
+    """Per-step samples: one frame + all-K cursor states + all-K actions."""
 
     def __init__(
         self,
-        frames: np.ndarray,        # (F, H, W, 3) uint8 — unique frames
-        frame_indices: np.ndarray,  # (N,) int32      — maps sample → frame row
-        cursor_feats: np.ndarray,   # (N, CURSOR_DIM) float32
-        actions: np.ndarray,        # (N, ACT_DIM) float32
+        frames: np.ndarray,       # (T, H, W, 3) uint8
+        cursor_feats: np.ndarray,  # (T, K, CURSOR_DIM) float32
+        actions: np.ndarray,       # (T, K, ACT_DIM) float32
     ) -> None:
-        # HWC uint8 → CHW float32 normalised to [0, 1]
         frames_chw = frames.transpose(0, 3, 1, 2).astype(np.float32) / 255.0
         self.frames = torch.from_numpy(frames_chw)
-        self.frame_indices = torch.from_numpy(frame_indices.astype(np.int64))
         self.cursors = torch.from_numpy(cursor_feats.astype(np.float32))
         self.actions = torch.from_numpy(actions.astype(np.float32))
 
     def __len__(self) -> int:
-        return len(self.frame_indices)
+        return len(self.frames)
 
     def __getitem__(self, idx: int):
-        return self.frames[self.frame_indices[idx]], self.cursors[idx], self.actions[idx]
+        return self.frames[idx], self.cursors[idx], self.actions[idx]
 
 
 # ── Section 6: Data collection ───────────────────────────────────────────────
@@ -251,78 +250,73 @@ def collect_pytorch_data(
     n_rollouts: int = N_ROLLOUTS,
     num_cursors: int | None = None,
     max_steps: int = MAX_STEPS,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Run the rule-based oracle and record (frame, cursor_feat, action) triples.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Run the rule-based oracle; record one sample per step.
 
-    Frames are stored once per step and shared across all K cursors active at
-    that step.  With K=24 this cuts frame memory ~24× compared to duplicating.
+    Each sample contains the rendered frame plus the state and action of
+    *every* cursor simultaneously — matching the model's forward signature
+    (B, K, 5) → (B, K, 4).
 
     Returns
     -------
-    frames        : (F, FRAME_H, FRAME_W, 3) uint8  — unique frames (one/step)
-    frame_indices : (N,) int32                       — maps sample i → frames row
-    cursor_feats  : (N, CURSOR_DIM) float32
-    actions       : (N, ACT_DIM) float32
-                      grab column encoded as +3 (grab) / −3 (release) logit
+    frames       : (T, FRAME_H, FRAME_W, 3) uint8
+    cursor_feats : (T, K, CURSOR_DIM) float32
+    actions      : (T, K, ACT_DIM) float32
+                     grab encoded as +3 (grab) / −3 (release) logit target
     """
-    unique_frames: list[np.ndarray] = []  # one per step across all rollouts
-    frame_indices: list[int] = []
-    cursor_list: list[np.ndarray] = []
-    action_list: list[np.ndarray] = []
+    frames_list: list[np.ndarray] = []
+    cursors_list: list[np.ndarray] = []
+    actions_list: list[np.ndarray] = []
 
     for rollout in range(n_rollouts):
         puzzle, layout = puzzle_factory(seed=rollout)
         env = JigsawEnvironment(puzzle, layout)
         env.reset()
+        K = len(env.pieces)
 
         oracle, _ = _make_oracle(env, num_cursors=num_cursors)
 
         for step in range(1, max_steps + 1):
             raw = env.render()
-            small = _resize_frame(raw)  # (FRAME_H, FRAME_W, 3) uint8
+            step_actions = oracle(raw, step)
 
-            actions = oracle(raw, step)
+            # One row per step: collect all K cursors into (K, 5) and (K, 4)
+            step_cursors = np.stack(
+                [build_cursor_feat(env, cid) for cid in range(K)]
+            )  # (K, 5)
 
-            # Store this frame once; all cursors in this step share the index
-            frame_idx = len(unique_frames)
-            any_active = any(not ap.finished for ap in actions.values())
-            if any_active:
-                unique_frames.append(small)
+            step_act = np.zeros((K, ACT_DIM), dtype=np.float32)
+            step_act[:, 0] = 0.5   # default: stay put, no grab
+            step_act[:, 2] = -3.0
+            for cid, ap in step_actions.items():
+                if not ap.finished:
+                    step_act[cid] = [
+                        ap.x, ap.y,
+                        3.0 if ap.grab else -3.0,
+                        float(np.clip(ap.rotation_delta, -1.0, 1.0)),
+                    ]
 
-            for cid, ap in actions.items():
-                if ap.finished:
-                    continue
-                c_feat = build_cursor_feat(env, cid)
-                act = np.array(
-                    [ap.x, ap.y, 3.0 if ap.grab else -3.0,
-                     float(np.clip(ap.rotation_delta, -1.0, 1.0))],
-                    dtype=np.float32,
-                )
-                frame_indices.append(frame_idx)
-                cursor_list.append(c_feat)
-                action_list.append(act)
+            frames_list.append(_resize_frame(raw))
+            cursors_list.append(step_cursors)
+            actions_list.append(step_act)
 
-            env.step(actions)
+            env.step(step_actions)
             if env.is_solved():
                 break
 
-        n_samples = len(frame_indices)
-        n_frames = len(unique_frames)
-        print(f"  rollout {rollout + 1:3d}/{n_rollouts}  samples: {n_samples:7,d}  unique frames: {n_frames:5,d}")
+        print(f"  rollout {rollout + 1:3d}/{n_rollouts}  steps recorded: {len(frames_list):6,d}")
 
-    if not unique_frames:
+    if not frames_list:
         return (
             np.zeros((0, FRAME_H, FRAME_W, 3), dtype=np.uint8),
-            np.zeros(0, dtype=np.int32),
-            np.zeros((0, CURSOR_DIM), dtype=np.float32),
-            np.zeros((0, ACT_DIM), dtype=np.float32),
+            np.zeros((0, N_COLS * N_ROWS, CURSOR_DIM), dtype=np.float32),
+            np.zeros((0, N_COLS * N_ROWS, ACT_DIM), dtype=np.float32),
         )
 
     return (
-        np.stack(unique_frames),
-        np.array(frame_indices, dtype=np.int32),
-        np.stack(cursor_list),
-        np.stack(action_list),
+        np.stack(frames_list),
+        np.stack(cursors_list),
+        np.stack(actions_list),
     )
 
 
@@ -355,11 +349,9 @@ def train_model(
         tr_loss, n_tr = 0.0, 0
         for frames, cursors, actions in train_loader:
             frames, cursors, actions = frames.to(device), cursors.to(device), actions.to(device)
-            pred = model(frames, cursors)
-            # Position + rotation: MSE on cols [0, 1, 3]
-            loss = mse(pred[:, [0, 1, 3]], actions[:, [0, 1, 3]])
-            # Grab: BCE on col [2]
-            loss = loss + 0.5 * bce(pred[:, 2], (actions[:, 2] > 0).float())
+            pred = model(frames, cursors)              # (B, K, 4)
+            loss = mse(pred[..., [0, 1, 3]], actions[..., [0, 1, 3]])
+            loss = loss + 0.5 * bce(pred[..., 2], (actions[..., 2] > 0).float())
             optimizer.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -373,9 +365,9 @@ def train_model(
         with torch.no_grad():
             for frames, cursors, actions in val_loader:
                 frames, cursors, actions = frames.to(device), cursors.to(device), actions.to(device)
-                pred = model(frames, cursors)
-                loss = mse(pred[:, [0, 1, 3]], actions[:, [0, 1, 3]])
-                loss = loss + 0.5 * bce(pred[:, 2], (actions[:, 2] > 0).float())
+                pred = model(frames, cursors)              # (B, K, 4)
+                loss = mse(pred[..., [0, 1, 3]], actions[..., [0, 1, 3]])
+                loss = loss + 0.5 * bce(pred[..., 2], (actions[..., 2] > 0).float())
                 va_loss += loss.item() * len(frames)
                 n_va += len(frames)
 
@@ -408,8 +400,9 @@ def make_torch_oracle(
 ):
     """Wrap a trained JigsawCursorNet in the piece-assignment state machine.
 
-    Maintains the same FIFO queue / phase logic as the rule-based oracle so
-    the neural net only needs to predict raw actions, not manage assignments.
+    One forward pass per step: frame + all-K cursor states → all-K actions.
+    The state machine (piece assignment / snap detection) lives outside the
+    neural net, exactly as during training.
     """
     N = len(env.pieces)
     K = N if (num_cursors is None or num_cursors <= 0) else min(num_cursors, N)
@@ -426,15 +419,23 @@ def make_torch_oracle(
         centroids = env.piece_centroids()
         rotations = env.piece_rotations()
 
-        # Prepare frame tensor once — shared across all cursors this step
+        # Single forward pass: frame + all K cursor states
         small = _resize_frame(obs)
         frame_t = torch.from_numpy(
             small.transpose(2, 0, 1).astype(np.float32) / 255.0
-        ).unsqueeze(0).to(device)  # (1, 3, H, W)
+        ).unsqueeze(0).to(device)                                   # (1, 3, H, W)
+
+        cursor_np = np.stack(
+            [build_cursor_feat(env, cid) for cid in range(K)]
+        )                                                            # (K, 5)
+        cursor_t = torch.from_numpy(cursor_np).unsqueeze(0).to(device)  # (1, K, 5)
+
+        with torch.no_grad():
+            pred = model(frame_t, cursor_t)[0].cpu().numpy()       # (K, 4)
 
         actions: dict[int, ActionPoint] = {}
-
-        for cid, st in state.items():
+        for cid in range(K):
+            st = state[cid]
             if st["piece"] is None:
                 if not queue:
                     actions[cid] = ActionPoint(0.5, 0.5, grab=False, finished=True)
@@ -442,18 +443,6 @@ def make_torch_oracle(
                 st["piece"] = queue.pop(0)
 
             idx = st["piece"]
-            c_feat = build_cursor_feat(env, cid)
-            cursor_t = torch.from_numpy(c_feat).unsqueeze(0).to(device)
-
-            with torch.no_grad():
-                pred = model(frame_t, cursor_t)[0].cpu().numpy()  # (4,)
-
-            ax = float(np.clip(pred[0], 0.0, 1.0))
-            ay = float(np.clip(pred[1], 0.0, 1.0))
-            grab = bool(pred[2] > 0.0)
-            rot_delta = float(np.clip(pred[3], -1.0, 1.0))
-
-            # Retire piece once within snap distance of its target
             tx, ty = targets[idx]
             pcx, pcy = centroids[idx]
             rot_err = ((rotations[idx] + 180) % 360) - 180
@@ -463,8 +452,10 @@ def make_torch_oracle(
                 continue
 
             actions[cid] = ActionPoint(
-                ax, ay, grab=grab,
-                rotation_delta=rot_delta,
+                float(np.clip(pred[cid, 0], 0.0, 1.0)),
+                float(np.clip(pred[cid, 1], 0.0, 1.0)),
+                grab=bool(pred[cid, 2] > 0.0),
+                rotation_delta=float(np.clip(pred[cid, 3], -1.0, 1.0)),
                 render_priority=cid * render_scale,
             )
 
@@ -506,13 +497,11 @@ def main() -> None:
     if data_path.exists():
         print(f"\n=== Loading cached data from {data_path} ===")
         d = np.load(data_path)
-        frames_arr = d["frames"]
-        frame_idx_arr = d["frame_indices"]
-        cursors_arr, actions_arr = d["cursors"], d["actions"]
+        frames_arr, cursors_arr, actions_arr = d["frames"], d["cursors"], d["actions"]
     else:
         print(f"\n=== Collecting oracle data ({N_ROLLOUTS} rollouts, K=N simultaneous) ===")
         t0 = time.time()
-        frames_arr, frame_idx_arr, cursors_arr, actions_arr = collect_pytorch_data(
+        frames_arr, cursors_arr, actions_arr = collect_pytorch_data(
             puzzle_factory,
             n_rollouts=N_ROLLOUTS,
             num_cursors=None,
@@ -520,24 +509,20 @@ def main() -> None:
         )
         elapsed = time.time() - t0
         frame_mb = frames_arr.nbytes / 1024 ** 2
-        print(f"Collected {len(frame_idx_arr):,} samples ({len(frames_arr):,} unique frames, "
-              f"{frame_mb:.0f} MB) in {elapsed:.1f}s")
-        np.savez_compressed(
-            data_path,
-            frames=frames_arr, frame_indices=frame_idx_arr,
-            cursors=cursors_arr, actions=actions_arr,
-        )
+        print(f"Collected {len(frames_arr):,} steps  frames={frame_mb:.0f} MB  "
+              f"cursors={cursors_arr.shape}  in {elapsed:.1f}s")
+        np.savez_compressed(data_path, frames=frames_arr, cursors=cursors_arr, actions=actions_arr)
         print(f"Saved to {data_path}")
 
-    print(f"Unique frames : {frames_arr.shape}  ({frames_arr.nbytes // 1024**2} MB)")
-    print(f"Samples       : {len(frame_idx_arr):,}  cursors={cursors_arr.shape}  actions={actions_arr.shape}")
+    print(f"Steps: {len(frames_arr):,}  frames={frames_arr.shape}  "
+          f"cursors={cursors_arr.shape}  actions={actions_arr.shape}")
 
-    if len(frame_idx_arr) == 0:
+    if len(frames_arr) == 0:
         print("No samples collected — aborting.")
         return
 
     # ── 3. DataLoaders ──────────────────────────────────────────────────────
-    full_ds = OracleDataset(frames_arr, frame_idx_arr, cursors_arr, actions_arr)
+    full_ds = OracleDataset(frames_arr, cursors_arr, actions_arr)
     n_val = max(1, int(len(full_ds) * VAL_FRACTION))
     n_train = len(full_ds) - n_val
     train_ds, val_ds = random_split(
@@ -596,9 +581,9 @@ def main() -> None:
     results = {
         "rule_based": rb,
         "bc_cnn": bc,
-        "n_train_samples": int(n_train),
-        "n_val_samples": int(n_val),
-        "n_unique_frames": int(len(frames_arr)),
+        "n_train_steps": int(n_train),
+        "n_val_steps": int(n_val),
+        "n_total_steps": int(len(frames_arr)),
         "n_epochs": N_EPOCHS,
         "model_params": n_params,
         "device": str(DEVICE),
