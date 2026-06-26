@@ -87,6 +87,34 @@ def _shortest_rot_err(rotation_deg: float) -> float:
     return ((rotation_deg + 180.0) % 360.0) - 180.0
 
 
+def perimeter_cursor_starts(
+    canvas_w: int, canvas_h: int, k: int, margin: float = 0.06,
+) -> dict[int, tuple[float, float]]:
+    """Spread ``k`` cursor start positions evenly around the canvas perimeter.
+
+    Returns ``{cursor_id: (x, y)}`` in canvas pixels, inset from the edges by
+    ``margin`` (a fraction of canvas size).  Distinct starts make each cursor's
+    nearest piece well-defined from step 1 — useful when a policy must infer its
+    target visually rather than from a piece assignment.
+    """
+    mx, my = canvas_w * margin, canvas_h * margin
+    x0, y0, x1, y1 = mx, my, canvas_w - mx, canvas_h - my
+    w, h = x1 - x0, y1 - y0
+    perim = 2 * (w + h)
+    starts: dict[int, tuple[float, float]] = {}
+    for i in range(k):
+        s = (i + 0.5) / k * perim
+        if s < w:
+            starts[i] = (x0 + s, y0)
+        elif s < w + h:
+            starts[i] = (x1, y0 + (s - w))
+        elif s < 2 * w + h:
+            starts[i] = (x1 - (s - w - h), y1)
+        else:
+            starts[i] = (x0, y1 - (s - 2 * w - h))
+    return starts
+
+
 class GreedyOracle:
     """Stateful greedy multi-cursor solver. Callable as a ``JigsawModel``."""
 

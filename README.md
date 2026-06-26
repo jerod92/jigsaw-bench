@@ -190,6 +190,25 @@ bc_model = make_bc_oracle(mlp, env, num_cursors=4)
 result = benchmark_model(env, bc_model, max_steps=3000, snap_to=True)
 ```
 
+### Visual multi-cursor model (PyTorch)
+
+`examples/kaggle_multicursor_train.py` is a self-contained Kaggle script that
+clones the repo and behaviorally-clones `GreedyOracle` into a CNN policy. One
+network is evaluated **once per step** — a shared CNN frame embedding is
+broadcast to all K cursor heads:
+
+```
+frame (B,3,H,W) → CNN → 512-d shared embedding ─┐
+                                                  ├→ (B,K,4) actions
+cursors (B,K,5) → MLP → (B,K,64) per-cursor    ─┘
+```
+
+The model sees only the rendered frame and per-cursor state — never raw piece
+coordinates. Cursors start at distinct spread-out positions
+(`perimeter_cursor_starts`), making "move toward your nearest piece, grab it,
+carry it home, release" a well-posed visual task. At inference the learned
+policy drives every cursor itself, with no piece-assignment state machine.
+
 ---
 
 ## Vanilla LLM mode

@@ -66,13 +66,18 @@ class JigsawEnvironment:
     """
 
     def __init__(self, puzzle: Puzzle, layout: ShuffleLayout, *, max_step_rotation_deg: float = 180.0,
-                 background: tuple[int, int, int] = (32, 32, 32)):
+                 background: tuple[int, int, int] = (32, 32, 32),
+                 initial_cursor_positions: dict[int, tuple[float, float]] | None = None):
         self.puzzle = puzzle
         self.layout = layout
         self.canvas_w = layout.canvas_width
         self.canvas_h = layout.canvas_height
         self.background = background
         self.max_step_rotation_deg = max_step_rotation_deg
+        # Optional spread-out starting positions (canvas px) so cursors are
+        # distinguishable from the very first step — this makes "move toward
+        # your nearest piece" a well-posed function of (frame, cursor state).
+        self.initial_cursor_positions = dict(initial_cursor_positions or {})
         self._step = 0
         self._next_z = 0.0
 
@@ -109,6 +114,11 @@ class JigsawEnvironment:
             ps.centroid = placement.shuffle_centroid
             ps.rotation_deg = placement.rotation_deg
         self.cursors.clear()
+        # Pre-create cursors at their spread-out starting positions, if given.
+        for cid, (x, y) in self.initial_cursor_positions.items():
+            cs = _CursorState(cursor_id=cid)
+            cs.last_x, cs.last_y = float(x), float(y)
+            self.cursors[cid] = cs
         self._step = 0
         return self.render()
 

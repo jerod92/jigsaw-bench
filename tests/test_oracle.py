@@ -9,6 +9,7 @@ from jigsaw_bench import (
     benchmark_model,
     generate_puzzle,
     make_greedy_oracle,
+    perimeter_cursor_starts,
     shuffle_pieces,
 )
 
@@ -67,6 +68,26 @@ def test_default_is_one_cursor_per_piece(image_path):
     env = _make_env(image_path)  # 12 pieces, < MAX_CURSORS
     oracle = make_greedy_oracle(env)
     assert oracle.K == 12
+
+
+def test_distinct_cursor_starts(image_path):
+    """Spread-out starts make cursors distinguishable from step 1, oracle still solves."""
+    env = _make_env(image_path)  # 12 pieces
+    starts = perimeter_cursor_starts(env.canvas_w, env.canvas_h, 12)
+    env.initial_cursor_positions = starts
+    env.reset()
+    positions = {(round(env.cursors[c].last_x), round(env.cursors[c].last_y)) for c in range(12)}
+    assert len(positions) == 12  # all distinct
+    assert (0, 0) not in positions
+    _, result = _run(env, 12)
+    assert result.solved
+
+
+def test_perimeter_starts_within_canvas(image_path):
+    starts = perimeter_cursor_starts(800, 600, 10)
+    assert len(starts) == 10
+    for x, y in starts.values():
+        assert 0 < x < 800 and 0 < y < 600
 
 
 def test_held_piece_cannot_be_stolen(image_path):
