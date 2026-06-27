@@ -209,6 +209,14 @@ coordinates. Cursors start at distinct spread-out positions
 carry it home, release" a well-posed visual task. At inference the learned
 policy drives every cursor itself, with no piece-assignment state machine.
 
+`examples/perception_control_2x2.py` is a small, CPU-friendly variant that
+**solves** 2x2 puzzles by behavioral cloning: a CNN predicts each held piece's
+home from the rendered image and a fixed controller carries it there
+(perception + control). See `examples/MULTICURSOR_BC_FINDINGS.md` for the full
+investigation — which sub-skills clone well (carry, rotation, grab, home
+perception) and which one is the wall (multi-object approach assignment), with
+the three output parameterizations we tried against it.
+
 ---
 
 ## Vanilla LLM mode
