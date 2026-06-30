@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Iterable, Protocol
+from typing import Callable, Protocol
 
 import numpy as np
 

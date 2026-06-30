@@ -10,7 +10,22 @@ from .puzzle import Puzzle, Piece, generate_puzzle
 from .shuffle import shuffle_pieces, ShuffleLayout
 from .environment import JigsawEnvironment, ActionPoint
 from .benchmark import benchmark_model, BenchmarkResult, piece_errors, piecewise_score
+from .gif_utils import record_rollout, save_gif
+from .oracle import (
+    GreedyOracle,
+    make_greedy_oracle,
+    perimeter_cursor_starts,
+    MAX_CURSORS,
+    MAX_PIECES,
+)
 from .llm_interface import LLMCursorInterface, benchmark_llm
+from .geo_model import (
+    GeoObservation,
+    geo_observation,
+    piece_geo_features,
+    GEO_PIECE_DIM,
+    GEO_CURSOR_DIM,
+)
 
 __all__ = [
     "PuzzleCuts",
@@ -28,6 +43,18 @@ __all__ = [
     "BenchmarkResult",
     "piece_errors",
     "piecewise_score",
+    "record_rollout",
+    "save_gif",
+    "GreedyOracle",
+    "make_greedy_oracle",
+    "perimeter_cursor_starts",
+    "MAX_CURSORS",
+    "MAX_PIECES",
     "LLMCursorInterface",
     "benchmark_llm",
+    "GeoObservation",
+    "geo_observation",
+    "piece_geo_features",
+    "GEO_PIECE_DIM",
+    "GEO_CURSOR_DIM",
 ]

@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .puzzle import Piece, Puzzle
+from .puzzle import Puzzle
 
 
 @dataclass

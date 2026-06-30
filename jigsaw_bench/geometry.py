@@ -2,8 +2,7 @@
 from __future__ import annotations
 
 import numpy as np
-from shapely.geometry import LineString, Polygon, Point
-from shapely.ops import unary_union
+from shapely.geometry import LineString, Polygon
 
 
 def polylines_intersect(

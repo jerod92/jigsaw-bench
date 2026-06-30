@@ -11,13 +11,11 @@ window/event loop — drive it from Python.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from typing import Iterable, Sequence
+from dataclasses import dataclass
+from typing import Sequence
 
 import numpy as np
 from PIL import Image
-from shapely.geometry import Point
-from shapely.affinity import rotate as shp_rotate, translate as shp_translate
 
 from .puzzle import Puzzle
 from .shuffle import ShuffleLayout
@@ -68,13 +66,18 @@ class JigsawEnvironment:
     """
 
     def __init__(self, puzzle: Puzzle, layout: ShuffleLayout, *, max_step_rotation_deg: float = 180.0,
-                 background: tuple[int, int, int] = (32, 32, 32)):
+                 background: tuple[int, int, int] = (32, 32, 32),
+                 initial_cursor_positions: dict[int, tuple[float, float]] | None = None):
         self.puzzle = puzzle
         self.layout = layout
         self.canvas_w = layout.canvas_width
         self.canvas_h = layout.canvas_height
         self.background = background
         self.max_step_rotation_deg = max_step_rotation_deg
+        # Optional spread-out starting positions (canvas px) so cursors are
+        # distinguishable from the very first step — this makes "move toward
+        # your nearest piece" a well-posed function of (frame, cursor state).
+        self.initial_cursor_positions = dict(initial_cursor_positions or {})
         self._step = 0
         self._next_z = 0.0
 
@@ -111,6 +114,11 @@ class JigsawEnvironment:
             ps.centroid = placement.shuffle_centroid
             ps.rotation_deg = placement.rotation_deg
         self.cursors.clear()
+        # Pre-create cursors at their spread-out starting positions, if given.
+        for cid, (x, y) in self.initial_cursor_positions.items():
+            cs = _CursorState(cursor_id=cid)
+            cs.last_x, cs.last_y = float(x), float(y)
+            self.cursors[cid] = cs
         self._step = 0
         return self.render()
 
@@ -180,10 +188,21 @@ class JigsawEnvironment:
                 self._release(cs)
 
     def _try_grab(self, cs: _CursorState, cx: float, cy: float) -> None:
-        """Find topmost piece whose mask covers (cx, cy) and grab it."""
+        """Find topmost *unheld* piece whose mask covers (cx, cy) and grab it.
+
+        Pieces already held by another cursor are skipped — a held piece is
+        claimed and cannot be stolen, so a carried piece passing over another
+        piece's grab point won't be picked up by a second cursor.
+        """
+        held_by_others = {
+            c.held_piece for c in self.cursors.values()
+            if c is not cs and c.held_piece is not None
+        }
         # Iterate from highest z to lowest.
         ordered = sorted(self.pieces.values(), key=lambda p: -p.z)
         for ps in ordered:
+            if ps.index in held_by_others:
+                continue
             if self._point_hits_piece(ps, cx, cy):
                 cs.held_piece = ps.index
                 # Grab offset = where this cursor sits, expressed in the piece's local frame
