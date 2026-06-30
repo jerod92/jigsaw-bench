@@ -43,5 +43,6 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 # Kaggle bootstrap scripts must clone + install the repo before importing it,
-# so module-level imports legitimately follow runtime setup code.
-"examples/kaggle_*.py" = ["E402"]
+# so module-level imports legitimately follow runtime setup code (E402). They
+# also use a deliberately compact one-line style for dense numeric code (E702).
+"examples/kaggle_*.py" = ["E402", "E702"]
